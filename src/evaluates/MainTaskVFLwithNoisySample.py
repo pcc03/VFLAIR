@@ -149,7 +149,6 @@ class MainTaskVFLwithNoisySample(object):
             if (self.k - 1) in self.args.defense_configs['party']:
                 gradient = self.launch_defense(gradient, "gradients")
 
-                # # ######### for backdoor start #########
         # for ik in range(self.k-1): # Only Passive Parties do
         #     gradient[ik][-2] = gradient[ik][-1]
         # # ######### for backdoor end #########
@@ -321,6 +320,17 @@ class MainTaskVFLwithNoisySample(object):
                 #     parties_data[ik][0] = torch.cat((parties_data[ik][0], self.parties[ik].train_poison_data[[poison_id]], self.parties[ik].train_data[[target_id]]), axis=0)
                 # parties_data[self.k-1][1] = torch.cat((parties_data[self.k-1][1], self.parties[self.k-1].train_poison_label[[poison_id]], self.label_to_one_hot(torch.tensor([self.args.target_label]), self.num_classes)), axis=0)
                 # # ######### for backdoor end #########
+                # # ######### for backdoor start #########
+                # # print("parties data", len(parties_data[self.k-1][0]),len(parties_data[self.k-1][1]))
+                # # print("parties data", type(parties_data[self.k-1][0]),len(parties_data[self.k-1][1]))
+                # # print("parties data", parties_data[self.k-1][0].size(),len(parties_data[self.k-1][1]))
+                # parties_data = list(parties_data)
+                # for ik in range(self.k):
+                #     parties_data[ik][0] = torch.cat((parties_data[ik][0], self.parties[ik].train_poison_data[[poison_id]], self.parties[ik].train_data[[target_id]]), axis=0)
+                # parties_data[self.k-1][1] = torch.cat((parties_data[self.k-1][1], self.parties[self.k-1].train_poison_label[[poison_id]], self.label_to_one_hot(torch.tensor([self.args.target_label]), self.num_classes)), axis=0)
+
+                # move per-batch tensors to device to match model device
+                parties_data = tuple((parties_data[ik][0].to(self.device), parties_data[ik][1].to(self.device)) for ik in range(self.k))
                 self.parties_data = parties_data
                 i += 1
 
@@ -372,6 +382,7 @@ class MainTaskVFLwithNoisySample(object):
                     data_loader_list = [self.parties[ik].test_loader for ik in range(self.k)]
                     # for parties_data in zip(self.parties[0].test_loader, self.parties[self.k-1].test_loader):
                     for parties_data in zip(*data_loader_list):
+                        parties_data = tuple((parties_data[ik][0].to(self.device), parties_data[ik][1].to(self.device)) for ik in range(self.k))
                         # print("test", parties_data[0][0].size(),parties_data[self.k-1][0].size(),parties_data[self.k-1][1].size())
                         gt_val_one_hot_label = self.label_to_one_hot(parties_data[self.k - 1][1], self.num_classes)
                         gt_val_one_hot_label = gt_val_one_hot_label.to(self.device)

@@ -350,6 +350,8 @@ class MainTaskVFL(object):
                     # else:
                     #     print('Noise OK')
                 # ###### Noisy Label Attack ######
+                # move per-batch tensors to device to match model device
+                parties_data = tuple((parties_data[ik][0].to(self.device), parties_data[ik][1].to(self.device)) for ik in range(self.k))
                 self.parties_data = parties_data
 
                 i += 1
@@ -416,6 +418,7 @@ class MainTaskVFL(object):
                 with torch.no_grad():
                     data_loader_list = [self.parties[ik].test_loader for ik in range(self.k)]
                     for parties_data in zip(*data_loader_list):
+                        parties_data = tuple((parties_data[ik][0].to(self.device), parties_data[ik][1].to(self.device)) for ik in range(self.k))
                         # print("test", parties_data[0][0].size(),parties_data[self.k-1][0].size(),parties_data[self.k-1][1].size())
 
                         gt_val_one_hot_label = self.label_to_one_hot(parties_data[self.k-1][1], self.num_classes)
@@ -520,6 +523,9 @@ class MainTaskVFL(object):
         self.final_state = self.save_state(True) 
         self.final_state.update(self.save_state(False)) 
         self.final_state.update(self.save_party_data()) 
+
+        if self.args.save_model:
+            self.save_final_models()
         
         if self.args.apply_mf==True:
             return self.test_acc, self.noise_test_acc
@@ -756,6 +762,27 @@ class MainTaskVFL(object):
         torch.save(([self.trained_models["model"][i].state_dict() for i in range(len(self.trained_models["model"]))],
                     self.trained_models["model_names"]), 
                   file_path)
+
+    def save_final_models(self):
+        dir_path = os.path.join(self.args.exp_res_dir, "trained_models")
+        if not os.path.exists(dir_path):
+            os.makedirs(dir_path)
+        file_path = os.path.join(
+            dir_path,
+            f'parties{self.k}_epoch{self.epochs}_seed{self.args.current_seed}.pth'
+        )
+        model_state_dicts = [self.parties[ik].local_model.state_dict() for ik in range(self.k)]
+        model_state_dicts.append(self.parties[self.k - 1].global_model.state_dict())
+        torch.save(
+            {
+                "model_state_dicts": model_state_dicts,
+                "model_types": [self.args.model_list[str(ik)]["type"] for ik in range(self.k)]
+                               + [self.args.global_model],
+                "args": vars(self.args),
+            },
+            file_path,
+        )
+        print(f"saved trained models to {file_path}")
 
     def evaluate_attack(self):
         self.attacker = AttackerLoader(self, self.args)

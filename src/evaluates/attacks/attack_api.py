@@ -13,6 +13,9 @@ from evaluates.attacks.DirectLabelScoring import DirectLabelScoring
 from evaluates.attacks.GenerativeRegressionNetwork import GenerativeRegressionNetwork
 from evaluates.attacks.ResSFL import ResSFL
 from evaluates.attacks.ASB import ASB
+from evaluates.attacks.PGD import PGD
+from evaluates.attacks.GradientBasedADI import GradientBasedADI
+from evaluates.attacks.LOCO import LOCO
 
 # LLM attacks
 from evaluates.attacks.VanillaModelInversion_WhiteBox import VanillaModelInversion_WhiteBox

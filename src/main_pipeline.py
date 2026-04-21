@@ -8,6 +8,7 @@ import logging
 import argparse
 import torch
 import tensorflow as tf
+import copy
 # import torch.nn as nn
 # import torchvision.transforms as transforms
 # from torchvision import datasets
@@ -25,11 +26,119 @@ import warnings
 warnings.filterwarnings("ignore")
 
 TARGETED_BACKDOOR = ['ReplacementBackdoor','ASB'] # main_acc  backdoor_acc
-UNTARGETED_BACKDOOR = ['NoisyLabel','MissingFeature','NoisySample'] # main_acc
+UNTARGETED_BACKDOOR = ['NoisyLabel','MissingFeature','NoisySample','PGD'] # main_acc
 LABEL_INFERENCE = ['BatchLabelReconstruction','DirectLabelScoring','NormbasedScoring',\
 'DirectionbasedScoring','PassiveModelCompletion','ActiveModelCompletion']
 ATTRIBUTE_INFERENCE = ['AttributeInference']
 FEATURE_INFERENCE = ['GenerativeRegressionNetwork','ResSFL','CAFE']
+ADI_SYNTHESIS = ['GradientBasedADI']
+CONTRIBUTION_ANALYSIS = ['LOCO']
+
+
+def resolve_checkpoint_path(args):
+    checkpoint_path = getattr(args, "checkpoint", None)
+    if checkpoint_path:
+        return checkpoint_path
+    return os.path.join(
+        args.exp_res_dir,
+        "trained_models",
+        f"parties{args.k}_epoch{args.main_epochs}_seed{args.current_seed}.pth",
+    )
+
+
+def load_saved_models_into_vfl(vfl, checkpoint_path, device):
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model_state_dicts = checkpoint["model_state_dicts"]
+    for ik in range(vfl.k):
+        vfl.parties[ik].prepare_data_loader(batch_size=vfl.batch_size)
+        vfl.parties[ik].local_model.load_state_dict(model_state_dicts[ik])
+        vfl.parties[ik].local_model.to(device).eval()
+    vfl.parties[vfl.k - 1].global_model.load_state_dict(model_state_dicts[vfl.k])
+    vfl.parties[vfl.k - 1].global_model.to(device).eval()
+    return checkpoint
+
+
+def evaluate_main_task_accuracy(vfl, attack_on="test"):
+    for ik in range(vfl.k):
+        vfl.parties[ik].local_model.eval()
+    vfl.parties[vfl.k - 1].global_model.eval()
+
+    correct = 0
+    total = 0
+    data_loader_list = [vfl.parties[ik].train_loader if attack_on == "train" else vfl.parties[ik].test_loader for ik in range(vfl.k)]
+    with torch.no_grad():
+        for parties_data in zip(*data_loader_list):
+            inputs = [parties_data[ik][0].to(vfl.device) for ik in range(vfl.k)]
+            labels = parties_data[vfl.k - 1][1].to(vfl.device)
+            logits = vfl.parties[vfl.k - 1].global_model(
+                [vfl.parties[ik].local_model(inputs[ik]) for ik in range(vfl.k)]
+            )
+            pred = torch.argmax(logits, dim=-1)
+            if labels.dim() > 1:
+                labels = torch.argmax(labels, dim=-1)
+            correct += (pred == labels).sum().item()
+            total += labels.numel()
+    return correct / max(total, 1)
+
+
+def evaluate_saved_model_test_only(args):
+    set_seed(args.current_seed)
+    args.need_auxiliary = 0
+    args = load_attack_configs(args.configs, args, -1)
+    args = load_parties(args)
+
+    checkpoint_path = resolve_checkpoint_path(args)
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"checkpoint not found: {checkpoint_path}")
+
+    vfl = MainTaskVFL(args)
+    load_saved_models_into_vfl(vfl, checkpoint_path, args.device)
+    print(f"loaded checkpoint from {checkpoint_path}")
+
+    clean_acc = evaluate_main_task_accuracy(vfl, attack_on="test")
+    print(f"clean test accuracy from checkpoint: {clean_acc}")
+
+    attack_indices = (
+        list(args.untargeted_backdoor_index)
+        + list(getattr(args, "adi_synthesis_index", []))
+        + list(getattr(args, "contribution_analysis_index", []))
+    )
+    if attack_indices == []:
+        return
+
+    for index in attack_indices:
+        attack_args = copy.deepcopy(args)
+        attack_args = load_attack_configs(attack_args.configs, attack_args, index)
+        print('======= Test Attack',index,': ',attack_args.attack_name,' =======')
+        print('attack configs:',attack_args.attack_configs)
+
+        if attack_args.attack_name not in ['PGD', 'GradientBasedADI', 'LOCO']:
+            print(f"test-only mode currently supports PGD, GradientBasedADI, and LOCO evaluation only, skipping {attack_args.attack_name}")
+            continue
+
+        vfl.args = attack_args
+        attack_result = vfl.evaluate_attack()
+        if attack_args.attack_name == 'GradientBasedADI':
+            attack_metric_name = 'domination_success_rate@95%'
+            attack_metric = attack_result['domination_success_rate@95%']
+            exp_result = f"K|bs|LR|num_class|Q|top_trainable|epoch|attack_name|{attack_args.attack_param_name}|clean_acc|clean_dom95_count|clean_dom95_rate|attacked_acc|target_success|dom95|dom99|avg_domination,%d|%d|%lf|%d|%d|%d|%d|{attack_args.attack_name}|{attack_args.attack_param}|{attack_result['clean_accuracy']}|{attack_result['clean_input_domination_count@95%']}|{attack_result['clean_input_domination_success_rate@95%']}|{attack_result['attacked_accuracy']}|{attack_result['target_success_rate']}|{attack_result['domination_success_rate@95%']}|{attack_result['domination_success_rate@99%']}|{attack_result['avg_domination_percentage']}" %\
+                (attack_args.k,attack_args.batch_size, attack_args.main_lr, attack_args.num_classes, attack_args.Q, attack_args.apply_trainable_layer,attack_args.main_epochs)
+        elif attack_args.attack_name == 'LOCO':
+            header = f"K|bs|LR|num_class|Q|top_trainable|epoch|attack_name|{attack_args.attack_param_name}|clean_acc|party_id|acc_wo_party|acc_drop|pred_change|logit_shift|true_prob_drop|contribution_score"
+            append_exp_res(attack_args.exp_res_path, header)
+            for party_metric in attack_result["party_metrics"]:
+                exp_result = f"%d|%d|%lf|%d|%d|%d|%d|{attack_args.attack_name}|{attack_args.attack_param}|{attack_result['clean_accuracy']}|{party_metric['party_id']}|{party_metric['accuracy_without_party']}|{party_metric['accuracy_drop']}|{party_metric['prediction_change_rate']}|{party_metric['mean_logit_shift']}|{party_metric['mean_true_class_prob_drop']}|{party_metric['contribution_score']}" %\
+                    (attack_args.k,attack_args.batch_size, attack_args.main_lr, attack_args.num_classes, attack_args.Q, attack_args.apply_trainable_layer,attack_args.main_epochs)
+                print(exp_result)
+                append_exp_res(attack_args.exp_res_path, exp_result)
+            continue
+        else:
+            attack_metric = clean_acc - attack_result
+            attack_metric_name = 'adv_acc_loss'
+            exp_result = f"K|bs|LR|num_class|Q|top_trainable|epoch|attack_name|{attack_args.attack_param_name}|main_task_acc|{attack_metric_name},%d|%d|%lf|%d|%d|%d|%d|{attack_args.attack_name}|{attack_args.attack_param}|{clean_acc}|{attack_metric}" %\
+                (attack_args.k,attack_args.batch_size, attack_args.main_lr, attack_args.num_classes, attack_args.Q, attack_args.apply_trainable_layer,attack_args.main_epochs)
+        print(exp_result)
+        append_exp_res(attack_args.exp_res_path, exp_result)
 
 def set_seed(seed=0):
     random.seed(seed)
@@ -248,22 +357,73 @@ def evaluate_untargeted_backdoor(args):
         print('======= Test Attack',index,': ',args.attack_name,' =======')
         print('attack configs:',args.attack_configs)
 
-        if args.apply_ns:
-            vfl = MainTaskVFLwithNoisySample(args)
-        else:
+        if args.attack_name == 'PGD':
             vfl = MainTaskVFL(args)
-        if args.dataset not in ['cora']:
-            main_acc, noise_main_acc = vfl.train()
+            if args.dataset not in ['cora']:
+                main_acc, _, _, _ = vfl.train()
+            else:
+                main_acc, _, _ = vfl.train_graph()
+            adv_acc = vfl.evaluate_attack()
+            attack_metric = main_acc - adv_acc
+            attack_metric_name = 'adv_acc_loss'
         else:
-            main_acc,noise_main_acc = vfl.train_graph()
+            if args.apply_ns:
+                vfl = MainTaskVFLwithNoisySample(args)
+            else:
+                vfl = MainTaskVFL(args)
+            if args.dataset not in ['cora']:
+                main_acc, noise_main_acc = vfl.train()
+            else:
+                main_acc,noise_main_acc = vfl.train_graph()
 
-        attack_metric = main_acc - noise_main_acc#args.main_acc_noattack - noise_main_acc
-        attack_metric_name = 'acc_loss'
+            attack_metric = main_acc - noise_main_acc#args.main_acc_noattack - noise_main_acc
+            attack_metric_name = 'acc_loss'
         # Save record for different defense method
         exp_result = f"K|bs|LR|num_class|Q|top_trainable|epoch|attack_name|{args.attack_param_name}|main_task_acc|{attack_metric_name},%d|%d|%lf|%d|%d|%d|%d|{args.attack_name}|{args.attack_param}|{main_acc}|{attack_metric}" %\
             (args.k,args.batch_size, args.main_lr, args.num_classes, args.Q, args.apply_trainable_layer,args.main_epochs)
         print(exp_result)
         append_exp_res(args.exp_res_path, exp_result)
+
+
+def evaluate_adi_synthesis(args):
+    for index in args.adi_synthesis_index:
+        torch.cuda.empty_cache()
+        set_seed(args.current_seed)
+        attack_args = copy.deepcopy(args)
+        attack_args = load_attack_configs(attack_args.configs, attack_args, index)
+        print('======= Test Attack',index,': ',attack_args.attack_name,' =======')
+        print('attack configs:',attack_args.attack_configs)
+
+        vfl = attack_args.basic_vfl
+        vfl.args = attack_args
+        attack_result = vfl.evaluate_attack()
+
+        exp_result = f"K|bs|LR|num_class|Q|top_trainable|epoch|attack_name|{attack_args.attack_param_name}|clean_acc|clean_dom95_count|clean_dom95_rate|attacked_acc|target_success|dom95|dom99|avg_domination,%d|%d|%lf|%d|%d|%d|%d|{attack_args.attack_name}|{attack_args.attack_param}|{attack_result['clean_accuracy']}|{attack_result['clean_input_domination_count@95%']}|{attack_result['clean_input_domination_success_rate@95%']}|{attack_result['attacked_accuracy']}|{attack_result['target_success_rate']}|{attack_result['domination_success_rate@95%']}|{attack_result['domination_success_rate@99%']}|{attack_result['avg_domination_percentage']}" %\
+            (attack_args.k,attack_args.batch_size, attack_args.main_lr, attack_args.num_classes, attack_args.Q, attack_args.apply_trainable_layer,attack_args.main_epochs)
+        print(exp_result)
+        append_exp_res(attack_args.exp_res_path, exp_result)
+
+
+def evaluate_contribution_analysis(args):
+    for index in args.contribution_analysis_index:
+        torch.cuda.empty_cache()
+        set_seed(args.current_seed)
+        attack_args = copy.deepcopy(args)
+        attack_args = load_attack_configs(attack_args.configs, attack_args, index)
+        print('======= Test Attack',index,': ',attack_args.attack_name,' =======')
+        print('attack configs:',attack_args.attack_configs)
+
+        vfl = attack_args.basic_vfl
+        vfl.args = attack_args
+        attack_result = vfl.evaluate_attack()
+
+        header = f"K|bs|LR|num_class|Q|top_trainable|epoch|attack_name|{attack_args.attack_param_name}|clean_acc|party_id|acc_wo_party|acc_drop|pred_change|logit_shift|true_prob_drop|contribution_score"
+        append_exp_res(attack_args.exp_res_path, header)
+        for party_metric in attack_result["party_metrics"]:
+            exp_result = f"%d|%d|%lf|%d|%d|%d|%d|{attack_args.attack_name}|{attack_args.attack_param}|{attack_result['clean_accuracy']}|{party_metric['party_id']}|{party_metric['accuracy_without_party']}|{party_metric['accuracy_drop']}|{party_metric['prediction_change_rate']}|{party_metric['mean_logit_shift']}|{party_metric['mean_true_class_prob_drop']}|{party_metric['contribution_score']}" %\
+                (attack_args.k,attack_args.batch_size, attack_args.main_lr, attack_args.num_classes, attack_args.Q, attack_args.apply_trainable_layer,attack_args.main_epochs)
+            print(exp_result)
+            append_exp_res(attack_args.exp_res_path, exp_result)
 
 def evaluate_targeted_backdoor(args):
     if args.defense_configs != None and 'party' in args.defense_configs.keys():
@@ -329,6 +489,10 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=97, help='random seed')
     parser.add_argument('--configs', type=str, default='test', help='configure json file path')
     parser.add_argument('--save_model', type=bool, default=False, help='whether to save the trained model')
+    parser.add_argument('--run_phase', type=str, default='both', choices=['train', 'test', 'both'],
+                        help='train only, test only from checkpoint, or train then evaluate attacks')
+    parser.add_argument('--checkpoint', type=str, default=None,
+                        help='optional checkpoint path for test-only mode')
     args = parser.parse_args()
 
     # for seed in range(97,102): # test 5 times 
@@ -379,6 +543,8 @@ if __name__ == '__main__':
         print('label_inference:',args.label_inference_list,args.label_inference_index)
         print('attribute_inference:',args.attribute_inference_list,args.attribute_inference_index)
         print('feature_inference:',args.feature_inference_list,args.feature_inference_index)
+        print('adi_synthesis:',args.adi_synthesis_list,args.adi_synthesis_index)
+        print('contribution_analysis:',args.contribution_analysis_list,args.contribution_analysis_index)
         
         
         # Save record for different defense method
@@ -404,7 +570,13 @@ if __name__ == '__main__':
         commuinfo='== commu:'+args.communication_protocol
         append_exp_res(args.exp_res_path, commuinfo)
 
+        if args.run_phase == 'test':
+            evaluate_saved_model_test_only(args)
+            continue
+
         args.basic_vfl, args.main_acc_noattack = evaluate_no_attack(args)
+        if args.run_phase == 'train':
+            continue
         
         if args.label_inference_list != []:
             evaluate_label_inference(args)
@@ -415,6 +587,14 @@ if __name__ == '__main__':
         if args.feature_inference_list != []:
             evaluate_feature_inference(args)
 
+        if args.adi_synthesis_list != []:
+            torch.cuda.empty_cache()
+            evaluate_adi_synthesis(args)
+
+        if args.contribution_analysis_list != []:
+            torch.cuda.empty_cache()
+            evaluate_contribution_analysis(args)
+
         if args.untargeted_backdoor_list != []:
             torch.cuda.empty_cache()
             evaluate_untargeted_backdoor(args)
@@ -424,10 +604,3 @@ if __name__ == '__main__':
             evaluate_targeted_backdoor(args)
         
         
-
-
-
-
-
-
-

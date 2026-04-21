@@ -10,6 +10,7 @@ from models.regression import *
 from models.resnet import *
 from models.rnn import *
 from models.adversarial_model import *
+from models.vgg import *
 
 
 def weights_init(m):

@@ -153,6 +153,18 @@ VFLAIR
    * `/src/configs/basic_configs.json` is a sample configuration file. You can copy it and modify the contents for your own purpose.
    * For detail information about configuration parameters, see `/src/configs/README.md` for detail information.
 
+  **Using VGG as a bottom model**
+  Add `vgg11`, `vgg13`, `vgg16`, or `vgg19` as the `type` in `model_list`. Example for CIFAR10:
+
+  ```json
+  "model_list": {
+    "0": { "type": "vgg16", "output_dim": 10 },
+    "1": { "type": "vgg16", "output_dim": 10 },
+    "apply_trainable_layer": 0,
+    "global_model": "ClassificationModelHostHead"
+  }
+  ```
+
 2. Use `cd src` and `python main_pipeline.py --gpu 0 --configs <your_config_file_name>` to start the evaluation process. A quick example can be launched by simplying using `cd src` and `python main_pipeline.py` (a vanilla VFL training and testing process is launched). For more detail descriptions, see Section Two.
 
 ### Two. Advanced Usage: Implement Your Own Algorithm

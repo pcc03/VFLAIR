@@ -325,6 +325,8 @@ class MainTaskVFLwithBackdoor(object):
                                                          self.label_to_one_hot(torch.tensor([self.args.target_label]),
                                                                                self.num_classes)), axis=0)
                 # ######### for backdoor end #########
+                # move per-batch tensors to device to match model device
+                parties_data = tuple((parties_data[ik][0].to(self.device), parties_data[ik][1].to(self.device)) for ik in range(self.k))
                 self.parties_data = parties_data
                 i += 1
 
@@ -377,6 +379,7 @@ class MainTaskVFLwithBackdoor(object):
                     data_loader_list = [self.parties[ik].test_loader for ik in range(self.k)]
                     # for parties_data in zip(self.parties[0].test_loader, self.parties[self.k-1].test_loader):
                     for parties_data in zip(*data_loader_list):
+                        parties_data = tuple((parties_data[ik][0].to(self.device), parties_data[ik][1].to(self.device)) for ik in range(self.k))
                         # print("test", parties_data[0][0].size(),parties_data[self.k-1][0].size(),parties_data[self.k-1][1].size())
                         gt_val_one_hot_label = self.label_to_one_hot(parties_data[self.k - 1][1], self.num_classes)
                         gt_val_one_hot_label = gt_val_one_hot_label.to(self.device)

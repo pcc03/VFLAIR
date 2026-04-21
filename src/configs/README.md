@@ -55,6 +55,19 @@
 }
 ```
 
+**Using VGG as a bottom model**
+  Add `vgg11`, `vgg13`, `vgg16`, or `vgg19` as the `type` in `model_list`. Example for CIFAR10:
+
+  ```json
+  "model_list": {
+    "0": { "type": "vgg16", "output_dim": 10 },
+    "1": { "type": "vgg16", "output_dim": 10 },
+    "apply_trainable_layer": 0,
+    "global_model": "ClassificationModelHostHead"
+  }
+  ```
+
+
 - "model_list": specify all the models that are used in the experiment, should be a dictionary with all the party's
   index as keys
     - "i": for each party with index $i$
@@ -115,6 +128,34 @@ BatchLabelReconstruction([Defending batch-level label inference and replacement 
 ```
 
 -
+PGD(Projected Gradient Descent) (adversarial example attack)
+    - "party": list of parties to perturb (default: active party)
+    - "eps": max L-infinity perturbation
+    - "alpha": step size
+    - "steps": number of iterations
+    - "random_start": 1 to enable random initialization within eps-ball
+    - "clamp_min", "clamp_max": input clamp range (default 0..1)
+    - "attack_on": "train" or "test" (default: "test")
+
+```json
+"attack_list": {
+        "0": {
+            "name": "PGD",
+            "parameters": {
+                "party": [1],
+                "eps": 0.3,
+                "alpha": 0.01,
+                "steps": 40,
+                "random_start": 1,
+                "clamp_min": 0.0,
+                "clamp_max": 1.0,
+                "attack_on": "test"
+            }
+        }
+      }
+```
+
+-
 ReplacementBackdoor([Defending batch-level label inference and replacement attacks in vertical federated learning](https://ieeexplore.ieee.org/abstract/document/9833321/))
     - "party": list of parties that cooperate with each other to launch this attack
 
@@ -164,3 +205,5 @@ GradientSparsification ([Deep gradient compression: Reducing the communication b
 
 For quick and convenient usage, we provide several standard configuration files for different experiment settings
 in `/src/configs/standard_configs/` . 
+
+**Note for ADI / VGG experiments**: the ADI setup follows the VGG paper's input sizing — resize images to 224x224, then split the image (e.g., vertical half → two 224x112 halves) for the parties. The `vgg16_vfl` implementation expects the full VGG pooling stack so flattened convolutional features will be 512 * 7 * 3 = 10752 for a 224x112 half-image; set each party's `output_dim` accordingly when running ADI-style experiments.

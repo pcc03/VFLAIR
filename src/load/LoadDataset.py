@@ -54,8 +54,48 @@ transform = transforms.Compose(
      transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
      ])
 transform_fn = transforms.Compose([
+    transforms.Resize((224, 224)),
     transforms.ToTensor()
 ])
+
+CIFAR10_OPT_MEAN = (0.485, 0.456, 0.406)
+CIFAR10_OPT_STD = (0.229, 0.224, 0.225)
+
+
+class Cutout(object):
+    def __init__(self, size):
+        self.size = size
+
+    def __call__(self, img):
+        h, w = img.shape[1], img.shape[2]
+        cutout_h = min(self.size, h)
+        cutout_w = min(self.size, w)
+        center_y = np.random.randint(0, h)
+        center_x = np.random.randint(0, w)
+        y1 = np.clip(center_y - cutout_h // 2, 0, h)
+        y2 = np.clip(center_y + cutout_h // 2, 0, h)
+        x1 = np.clip(center_x - cutout_w // 2, 0, w)
+        x2 = np.clip(center_x + cutout_w // 2, 0, w)
+        img[:, y1:y2, x1:x2] = 0.0
+        return img
+
+
+def get_cifar10_transforms(args):
+    if getattr(args, "enable_cifar10_optimization", False):
+        train_transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=CIFAR10_OPT_MEAN, std=CIFAR10_OPT_STD),
+            Cutout(16),
+        ])
+        test_transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=CIFAR10_OPT_MEAN, std=CIFAR10_OPT_STD),
+        ])
+        return train_transform, test_transform
+    return transform_fn, transform_fn
 
 from utils.basic_functions import get_class_i, get_labeled_data, fetch_data_and_label, generate_poison_data, \
     label_to_one_hot
@@ -63,7 +103,7 @@ from utils.cora_utils import *
 from utils.graph_functions import load_data1, split_graph
 
 # DATA_PATH ='./load/share_dataset/'  #'../../../share_dataset/'
-DATA_PATH = '../../../share_dataset/'
+DATA_PATH = '../data/'
 IMAGE_DATA = ['mnist', 'cifar10', 'cifar100', 'cifar20', 'utkface', 'facescrub', 'places365']
 TABULAR_DATA = ['breast_cancer_diagnose', 'diabetes', 'adult_income', 'criteo', 'credit', 'nursery', 'avazu']
 GRAPH_DATA = ['cora']
@@ -299,8 +339,9 @@ def load_dataset_per_party(args, index):
         # test_dst = SimpleDataset(data, label)
         test_dst = (torch.tensor(data), label)
     elif args.dataset == "cifar10":
-        half_dim = 16
-        train_dst = datasets.CIFAR10(DATA_PATH, download=True, train=True, transform=transform_fn)
+        half_dim = 112
+        train_transform, test_transform = get_cifar10_transforms(args)
+        train_dst = datasets.CIFAR10(DATA_PATH, download=True, train=True, transform=train_transform)
         data, label = fetch_data_and_label(train_dst, args.num_classes)
         # train_dst = SimpleDataset(data, label)
         if args.need_auxiliary == 1:
@@ -310,7 +351,7 @@ def load_dataset_per_party(args, index):
             aux_dst = (X_aux, y_aux)
         train_dst = (torch.tensor(data), label)
 
-        test_dst = datasets.CIFAR10(DATA_PATH, download=True, train=False, transform=transform_fn)
+        test_dst = datasets.CIFAR10(DATA_PATH, download=True, train=False, transform=test_transform)
         data, label = fetch_data_and_label(test_dst, args.num_classes)
         # test_dst = SimpleDataset(data, label)
         test_dst = (torch.tensor(data), label)
@@ -799,18 +840,18 @@ def load_dataset_per_party(args, index):
     if len(train_dst) == 2:
         if not args.dataset in GRAPH_DATA:
             if not args.dataset == 'nuswide':
-                train_dst = (train_dst[0].to(args.device), train_dst[1].to(args.device))
-                test_dst = (test_dst[0].to(args.device), test_dst[1].to(args.device))
+                # Keep dataset tensors on CPU to avoid moving the entire dataset to GPU
+                # (this would OOM for large resized datasets). Batches are moved to
+                # `args.device` during training/validation loops instead.
+                train_dst = (train_dst[0], train_dst[1])
+                test_dst = (test_dst[0], test_dst[1])
                 if args.need_auxiliary == 1:
-                    aux_dst = (aux_dst[0].to(args.device), aux_dst[1].to(args.device))
+                    aux_dst = (aux_dst[0], aux_dst[1])
             else:
-                train_dst = (
-                    [train_dst[0][0].to(args.device), train_dst[0][1].to(args.device)], train_dst[1].to(args.device))
-                test_dst = (
-                    [test_dst[0][0].to(args.device), test_dst[0][1].to(args.device)], test_dst[1].to(args.device))
+                train_dst = ([train_dst[0][0], train_dst[0][1]], train_dst[1])
+                test_dst = ([test_dst[0][0], test_dst[0][1]], test_dst[1])
                 if args.need_auxiliary == 1:
-                    aux_dst = (
-                        [aux_dst[0][0].to(args.device), aux_dst[0][1].to(args.device)], aux_dst[1].to(args.device))
+                    aux_dst = ([aux_dst[0][0], aux_dst[0][1]], aux_dst[1])
             train_dst = dataset_partition(args, index, train_dst, half_dim)
             test_dst = dataset_partition(args, index, test_dst, half_dim)
             if args.need_auxiliary == 1:
@@ -821,21 +862,15 @@ def load_dataset_per_party(args, index):
     elif len(train_dst) == 3:
         if not args.dataset in GRAPH_DATA:
             if not args.dataset == 'nuswide':
-                train_dst = (train_dst[0].to(args.device), train_dst[1].to(args.device), train_dst[2].to(args.device))
-                test_dst = (test_dst[0].to(args.device), test_dst[1].to(args.device), test_dst[2].to(args.device))
+                train_dst = (train_dst[0], train_dst[1], train_dst[2])
+                test_dst = (test_dst[0], test_dst[1], test_dst[2])
                 if args.need_auxiliary == 1:
-                    aux_dst = (aux_dst[0].to(args.device), aux_dst[1].to(args.device), aux_dst[2].to(args.device))
+                    aux_dst = (aux_dst[0], aux_dst[1], aux_dst[2])
             else:
-                train_dst = (
-                    [train_dst[0][0].to(args.device), train_dst[0][1].to(args.device)], train_dst[1].to(args.device),
-                    train_dst[2].to(args.device))
-                test_dst = (
-                    [test_dst[0][0].to(args.device), test_dst[0][1].to(args.device)], test_dst[1].to(args.device),
-                    test_dst[2].to(args.device))
+                train_dst = ([train_dst[0][0], train_dst[0][1]], train_dst[1], train_dst[2])
+                test_dst = ([test_dst[0][0], test_dst[0][1]], test_dst[1], test_dst[2])
                 if args.need_auxiliary == 1:
-                    aux_dst = (
-                        [aux_dst[0][0].to(args.device), aux_dst[0][1].to(args.device)], aux_dst[1].to(args.device),
-                        aux_dst[2].to(args.device))
+                    aux_dst = ([aux_dst[0][0], aux_dst[0][1]], aux_dst[1], aux_dst[2])
             train_dst = dataset_partition(args, index, train_dst, half_dim)
             test_dst = dataset_partition(args, index, test_dst, half_dim)
             if args.need_auxiliary == 1:
@@ -904,9 +939,10 @@ def load_dataset_per_party_backdoor(args, index):
             test_data, test_label = fetch_data_and_label(test_dst, args.num_classes)
         elif args.dataset == "cifar10":
             half_dim = 16
-            train_dst = datasets.CIFAR10(DATA_PATH, download=True, train=True, transform=transform_fn)
+            train_transform, test_transform = get_cifar10_transforms(args)
+            train_dst = datasets.CIFAR10(DATA_PATH, download=True, train=True, transform=train_transform)
             train_data, train_label = fetch_data_and_label(train_dst, args.num_classes)
-            test_dst = datasets.CIFAR10(DATA_PATH, download=True, train=False, transform=transform_fn)
+            test_dst = datasets.CIFAR10(DATA_PATH, download=True, train=False, transform=test_transform)
             test_data, test_label = fetch_data_and_label(test_dst, args.num_classes)
         else:
             assert args.dataset == "mnist"
@@ -1145,9 +1181,10 @@ def load_dataset_per_party_noisysample(args, index):
             test_data, test_label = fetch_data_and_label(test_dst, args.num_classes)
         elif args.dataset == "cifar10":
             half_dim = 16
-            train_dst = datasets.CIFAR10(DATA_PATH, download=True, train=True, transform=transform_fn)
+            train_transform, test_transform = get_cifar10_transforms(args)
+            train_dst = datasets.CIFAR10(DATA_PATH, download=True, train=True, transform=train_transform)
             train_data, train_label = fetch_data_and_label(train_dst, args.num_classes)
-            test_dst = datasets.CIFAR10(DATA_PATH, download=True, train=False, transform=transform_fn)
+            test_dst = datasets.CIFAR10(DATA_PATH, download=True, train=False, transform=test_transform)
             test_data, test_label = fetch_data_and_label(test_dst, args.num_classes)
         else:
             assert args.dataset == "mnist"

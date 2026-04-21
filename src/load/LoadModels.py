@@ -166,6 +166,67 @@ def load_basic_models(args, index):
         local_model = globals()[current_model_type](current_vocab_size, current_output_dim)
     else:
         local_model = globals()[current_model_type](current_input_dim, current_output_dim)
+    # If the model is configured to return embeddings (not predictions), replace
+    # its final classifier with an identity layer so forward() yields the
+    # embedding vector. Then set the party's `output_dim` to the embedding size
+    # so later the global head receives the correct concatenated dimension.
+    model_cfg = args.model_list[str(index)] if str(index) in args.model_list else {}
+    try:
+        return_embedding = bool(model_cfg.get('return_embedding', False))
+    except Exception:
+        return_embedding = False
+
+    if return_embedding:
+        embed_dim = None
+        # ResNet-style: attribute `fc`
+        if hasattr(local_model, 'fc') and isinstance(local_model.fc, nn.Linear):
+            embed_dim = local_model.fc.in_features
+            local_model.fc = nn.Identity()
+        # VGG-style: attribute `classifier` — prefer computing the flattened
+        # conv feature size (channels * spatial) instead of using the
+        # classifier's in_features (which is often the channel count only).
+        elif hasattr(local_model, 'classifier') and isinstance(local_model.classifier, nn.Linear):
+            # Try to compute flattened embedding by forwarding a dummy tensor
+            # through the convolutional `features` module. Fall back to the
+            # classifier.in_features when this fails.
+            embed_dim = None
+            try:
+                import torch as _torch
+                # determine in_channels from the first Conv2d in features
+                in_ch = 3
+                for m in local_model.features:
+                    if isinstance(m, nn.Conv2d):
+                        in_ch = m.in_channels
+                        break
+                # Heuristic spatial dims: CIFAR-ADi setup uses 224x112 halves
+                if hasattr(args, 'dataset') and 'cifar' in args.dataset.lower():
+                    H, W = 224, 112
+                else:
+                    H, W = 224, 224
+                dummy = _torch.zeros(1, in_ch, H, W, device=next(local_model.parameters()).device)
+                with _torch.no_grad():
+                    out_feat = local_model.features(dummy)
+                embed_dim = out_feat.view(1, -1).size(1)
+                local_model.classifier = nn.Identity()
+            except Exception:
+                embed_dim = local_model.classifier.in_features
+                local_model.classifier = nn.Identity()
+        # ResNet2-style: attribute `linear`
+        elif hasattr(local_model, 'linear') and isinstance(local_model.linear, nn.Linear):
+            embed_dim = local_model.linear.in_features
+            local_model.linear = nn.Identity()
+        # BottomModelPlus style (if already wrapped) or other custom cases
+        else:
+            # allow explicit embedding_dim in config
+            embed_dim = model_cfg.get('embedding_dim', None)
+
+        if embed_dim is None:
+            print(f"[warning] cannot detect embedding dim for model {current_model_type} at party {index}; keeping output_dim={current_output_dim}")
+        else:
+            args.model_list[str(index)]['output_dim'] = embed_dim
+            current_output_dim = embed_dim
+            print(f"party {index}: set bottom model to return embedding dim {embed_dim}")
+
     local_model = local_model.to(args.device)
     print(f"local_model parameters: {sum(p.numel() for p in local_model.parameters())}")
     local_model_optimizer = torch.optim.Adam(list(local_model.parameters()), lr=args.main_lr, weight_decay=0.0)

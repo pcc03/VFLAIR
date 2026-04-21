@@ -56,9 +56,11 @@ class Party(object):
         # local model
         self.local_model = None
         self.local_model_optimizer = None
+        self.local_lr_scheduler = None
         # global_model
         self.global_model = None
         self.global_model_optimizer = None
+        self.global_lr_scheduler = None
 
         # attack and defense
         # self.attacker = None
@@ -188,6 +190,17 @@ class Party(object):
             self.global_model,
             self.global_model_optimizer,
         ) = load_models_per_party(args, index)
+        if getattr(args, "enable_cifar10_optimization", False) and getattr(args, "dataset", None) == "cifar10":
+            if self.local_model_optimizer is not None:
+                self.local_lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    self.local_model_optimizer,
+                    T_max=max(args.main_epochs - 1, 1),
+                )
+            if self.global_model_optimizer is not None:
+                self.global_lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    self.global_model_optimizer,
+                    T_max=max(args.main_epochs - 1, 1),
+                )
 
     # def prepare_attacker(self, args, index):
     #     if index in args.attack_configs['party']:
@@ -201,6 +214,11 @@ class Party(object):
         return (self.local_model_optimizer.state_dict()['param_groups'][0]['lr'])
 
     def LR_decay(self, i_epoch):
+        if self.local_model_optimizer is None:
+            return
+        if self.local_lr_scheduler is not None:
+            self.local_lr_scheduler.step(i_epoch)
+            return
         eta_0 = self.args.main_lr
         eta_t = eta_0 / (np.sqrt(i_epoch + 1))
         for param_group in self.local_model_optimizer.param_groups:

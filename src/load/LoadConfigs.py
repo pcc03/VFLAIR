@@ -7,11 +7,13 @@ import argparse
 from models.autoencoder import AutoEncoder
 
 TARGETED_BACKDOOR = ['ReplacementBackdoor', 'ASB']
-UNTARGETED_BACKDOOR = ['NoisyLabel', 'MissingFeature', 'NoisySample']
+UNTARGETED_BACKDOOR = ['NoisyLabel', 'MissingFeature', 'NoisySample', 'PGD']
 LABEL_INFERENCE = ['BatchLabelReconstruction', 'DirectLabelScoring', 'NormbasedScoring', \
                    'DirectionbasedScoring', 'PassiveModelCompletion', 'ActiveModelCompletion']
 ATTRIBUTE_INFERENCE = ['AttributeInference']
 FEATURE_INFERENCE = ['GenerativeRegressionNetwork', 'ResSFL']
+ADI_SYNTHESIS = ['GradientBasedADI']
+CONTRIBUTION_ANALYSIS = ['LOCO']
 # LLM attacks
 INVERSION = ["VanillaModelInversion_WhiteBox", "VanillaModelInversion_BlackBox", "WhiteBoxInversion"]
 
@@ -37,6 +39,13 @@ def load_basic_configs(config_file_name, args):
 
 def do_load_basic_configs(config_dict, args):
     # print(config_dict)
+    args.save_model = config_dict['save_model'] if ('save_model' in config_dict) else getattr(args, 'save_model', False)
+    args.enable_cifar10_optimization = config_dict['enable_cifar10_optimization'] if (
+        'enable_cifar10_optimization' in config_dict
+    ) else getattr(args, 'enable_cifar10_optimization', False)
+    args.cifar10_optimized_batch_size = config_dict['cifar10_optimized_batch_size'] if (
+        'cifar10_optimized_batch_size' in config_dict
+    ) else getattr(args, 'cifar10_optimized_batch_size', 128)
     args.passive_party_class = config_dict['passive_party_class'] if (
                 'passive_party_class' in config_dict) else "PassiveParty_LLM"
     args.active_party_class = config_dict['active_party_class'] if (
@@ -101,6 +110,13 @@ def do_load_basic_configs(config_dict, args):
         args.num_classes = 10
         args.use_prompt = 0
         args.n_shot = 0
+    elif (
+        args.enable_cifar10_optimization
+        and args.dataset_split.get('dataset_name') == 'cifar10'
+        and args.batch_size == 256
+    ):
+        args.batch_size = args.cifar10_optimized_batch_size
+
     args.num_classes = args.dataset_split['num_classes'] if ('num_classes' in args.dataset_split) else 10
     args.use_prompt = args.dataset_split['use_prompt'] if ('use_prompt' in args.dataset_split) else 0
     args.n_shot = args.dataset_split['n_shot'] if ('n_shot' in args.dataset_split) else 0
@@ -264,6 +280,8 @@ def do_load_basic_configs(config_dict, args):
                     'global_model' in config_model_dict) else 'ClassificationModelHostHead'
         print('args.local_encoders_num:', args.local_encoders_num)
 
+        # NOTE: CIFAR-10 VFL automatic defaults removed to enforce fully-explicit configs
+
     else:
         default_model_dict = {}
         default_dict_element = {'type': 'MLP2', 'path': '../models/MLP2/random'}
@@ -376,6 +394,10 @@ def do_load_basic_configs(config_dict, args):
     args.attribute_inference_index = []
     args.feature_inference_list = []
     args.feature_inference_index = []
+    args.adi_synthesis_list = []
+    args.adi_synthesis_index = []
+    args.contribution_analysis_list = []
+    args.contribution_analysis_index = []
     args.inversion_list = []
     args.inversion_index = []
     args.apply_attack = False
@@ -406,6 +428,14 @@ def do_load_basic_configs(config_dict, args):
                     elif _name in FEATURE_INFERENCE:
                         args.feature_inference_list.append(_name)
                         args.feature_inference_index.append(ik)
+
+                    elif _name in ADI_SYNTHESIS:
+                        args.adi_synthesis_list.append(_name)
+                        args.adi_synthesis_index.append(ik)
+
+                    elif _name in CONTRIBUTION_ANALYSIS:
+                        args.contribution_analysis_list.append(_name)
+                        args.contribution_analysis_index.append(ik)
 
                     # LLM attacks
                     elif _name in INVERSION:
@@ -477,6 +507,12 @@ def load_attack_configs(config_file_name, args, index):
         elif args.attack_name in FEATURE_INFERENCE:
             args.attack_type = 'feature_inference'
 
+        elif args.attack_name in ADI_SYNTHESIS:
+            args.attack_type = 'adi_synthesis'
+
+        elif args.attack_name in CONTRIBUTION_ANALYSIS:
+            args.attack_type = 'contribution_analysis'
+
         elif args.attack_name in INVERSION:
             args.attack_type = 'inversion'
 
@@ -496,6 +532,15 @@ def load_attack_configs(config_file_name, args, index):
         elif args.attack_name == 'NoisySample':
             args.attack_param_name = 'noise_lambda'
             args.attack_param = str(attack_config_dict['parameters']['noise_lambda'])
+        elif args.attack_name == 'PGD':
+            args.attack_param_name = 'eps'
+            args.attack_param = str(attack_config_dict['parameters'].get('eps', 0.3))
+        elif args.attack_name == 'GradientBasedADI':
+            args.attack_param_name = 'mutation_mode'
+            args.attack_param = str(attack_config_dict['parameters'].get('mutation_mode', 'random_mutation'))
+        elif args.attack_name == 'LOCO':
+            args.attack_param_name = 'replacement'
+            args.attack_param = str(attack_config_dict['parameters'].get('replacement', 'zero'))
         else:
             args.attack_param_name = 'None'
             args.attack_param = None
