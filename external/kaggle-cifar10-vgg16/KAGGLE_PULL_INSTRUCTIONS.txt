@@ -1,0 +1,15 @@
+Kernel: https://www.kaggle.com/code/vtu5118/cifar-10-using-vgg16
+Slug for API: vtu5118/cifar-10-using-vgg16
+
+1) Create an API token on Kaggle (Account -> Create New API Token).
+   Save the downloaded kaggle.json to ONE of:
+     ~/.kaggle/kaggle.json
+     ~/.config/kaggle/kaggle.json
+   chmod 600 that file.
+
+2) Pull the notebook (.ipynb + metadata) into this folder:
+   conda activate VFLAIR
+   kaggle kernels pull vtu5118/cifar-10-using-vgg16 -m -p /home/peng326/VFLAIR/external/kaggle-cifar10-vgg16
+
+The `kaggle` CLI is already installed in the VFLAIR conda env.
+Without kaggle.json, `kaggle kernels pull` will fail with an authentication error.

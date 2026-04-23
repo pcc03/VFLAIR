@@ -229,9 +229,41 @@ def load_basic_models(args, index):
 
     local_model = local_model.to(args.device)
     print(f"local_model parameters: {sum(p.numel() for p in local_model.parameters())}")
-    local_model_optimizer = torch.optim.Adam(list(local_model.parameters()), lr=args.main_lr, weight_decay=0.0)
-    # print(f"use SGD for local optimizer for PMC checking")
-    # local_model_optimizer = torch.optim.SGD(list(local_model.parameters()), lr=args.main_lr, momentum=0.9, weight_decay=5e-4)
+    optimizer_name = getattr(args, 'optimizer_name', 'sgd')
+    weight_decay = float(getattr(args, 'optimizer_weight_decay', 5e-4))
+    sgd_momentum = float(getattr(args, "optimizer_momentum", 0.9))
+    if str(optimizer_name).lower() == "adam" and getattr(
+        args, "cifar10_keras_match", False
+    ) and getattr(args, "dataset", None) == "cifar10":
+        print(
+            "[cifar10_keras_match] warning: Keras reference uses legacy SGD; "
+            f"current optimizer is {optimizer_name!r}."
+        )
+    if (
+        getattr(args, "cifar10_keras_match", False)
+        and getattr(args, "dataset", None) == "cifar10"
+        and str(optimizer_name).lower() == "sgd"
+    ):
+        # `external/kaggle-cifar10-vgg16/cifar_10_using_vgg16.py` uses
+        # tf.keras.optimizers.legacy.SGD(lr=0.001, momentum=0.9) with no L2/WD and no Nesterov.
+        weight_decay = 0.0
+        sgd_momentum = 0.9
+    sgd_nesterov = False
+    if optimizer_name == 'adam':
+        local_model_optimizer = torch.optim.Adam(
+            list(local_model.parameters()),
+            lr=args.main_lr,
+            weight_decay=weight_decay,
+        )
+    else:
+        local_model_optimizer = torch.optim.SGD(
+            list(local_model.parameters()),
+            lr=args.main_lr,
+            momentum=sgd_momentum,
+            weight_decay=weight_decay,
+            dampening=0,
+            nesterov=sgd_nesterov,
+        )
 
     # update optimizer
     if 'activemodelcompletion' in args.attack_name.lower() and index in args.attack_configs['party']:
@@ -254,9 +286,21 @@ def load_basic_models(args, index):
                 global_input_dim += args.model_list[str(ik)]['output_dim']
             global_model = globals()[args.global_model](global_input_dim, args.num_classes)
             global_model = global_model.to(args.device)
-            global_model_optimizer = torch.optim.Adam(list(global_model.parameters()), lr=args.main_lr)
-            # print(f"use SGD for global optimizer for PMC checking")
-            # global_model_optimizer = torch.optim.SGD(list(global_model.parameters()), lr=args.main_lr, momentum=0.9, weight_decay=5e-4)
+            if optimizer_name == 'adam':
+                global_model_optimizer = torch.optim.Adam(
+                    list(global_model.parameters()),
+                    lr=args.main_lr,
+                    weight_decay=weight_decay,
+                )
+            else:
+                global_model_optimizer = torch.optim.SGD(
+                    list(global_model.parameters()),
+                    lr=args.main_lr,
+                    momentum=sgd_momentum,
+                    weight_decay=weight_decay,
+                    dampening=0,
+                    nesterov=sgd_nesterov,
+                )
 
     return args, local_model, local_model_optimizer, global_model, global_model_optimizer
 

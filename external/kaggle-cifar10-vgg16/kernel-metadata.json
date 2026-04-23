@@ -1,0 +1,24 @@
+{
+  "id": "vtu5118/cifar-10-using-vgg16",
+  "id_no": 12277429,
+  "title": "CIFAR-10 using VGG16",
+  "code_file": "cifar-10-using-vgg16.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": false,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "keywords": [
+    "gpu",
+    "cnn",
+    "tensorflow",
+    "keras",
+    "image",
+    "neural networks"
+  ],
+  "dataset_sources": [],
+  "kernel_sources": [],
+  "competition_sources": [],
+  "model_sources": []
+}

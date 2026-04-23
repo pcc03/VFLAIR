@@ -1,5 +1,8 @@
 import os
 import sys
+import json
+import atexit
+from datetime import datetime
 import numpy as np
 import time
 
@@ -7,6 +10,158 @@ import random
 import logging
 import argparse
 import torch
+
+
+class PipelineStreamTee(object):
+    __slots__ = ("_s", "_f")
+
+    def __init__(self, stream, log_file):
+        object.__setattr__(self, "_s", stream)
+        object.__setattr__(self, "_f", log_file)
+
+    def write(self, data):
+        if not data:
+            return
+        self._s.write(data)
+        self._f.write(data)
+        if "\n" in data:
+            self._f.flush()
+
+    def flush(self):
+        self._s.flush()
+        self._f.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._s, name)
+
+
+_pipeline_log_fp = None
+_pipeline_active_log_path = None
+_pipeline_tee_disabled = False
+_pipeline_atexit_registered = False
+
+
+def _default_pipeline_log_path():
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    logs_dir = os.path.join(project_root, "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+    return os.path.join(logs_dir, "main_pipeline.log")
+
+
+def _resolve_config_path_from_argv():
+    argv = sys.argv[1:]
+    cfg_name = None
+    for i, token in enumerate(argv):
+        if token == "--configs" and i + 1 < len(argv):
+            cfg_name = argv[i + 1].strip()
+            break
+        if token.startswith("--configs="):
+            cfg_name = token.split("=", 1)[1].strip()
+            break
+    if not cfg_name:
+        return None
+    if cfg_name.endswith(".json"):
+        cfg_file = cfg_name
+    else:
+        cfg_file = f"{cfg_name}.json"
+    if os.path.isabs(cfg_file):
+        return cfg_file
+    if os.sep in cfg_file or cfg_file.startswith("."):
+        return os.path.abspath(cfg_file)
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs", cfg_file)
+
+
+def _read_pipeline_log_path_from_config_file(cfg_path):
+    if not cfg_path or not os.path.exists(cfg_path):
+        return ""
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg_dict = json.load(f)
+        return str(cfg_dict.get("pipeline_log_path", "")).strip()
+    except Exception:
+        return ""
+
+
+def _unwrap_pipeline_streams():
+    global _pipeline_log_fp
+    sys.stdout = sys.__stdout__
+    sys.stderr = sys.__stderr__
+    if _pipeline_log_fp is not None:
+        try:
+            _pipeline_log_fp.flush()
+            _pipeline_log_fp.close()
+        except Exception:
+            pass
+        _pipeline_log_fp = None
+
+
+def _pipeline_atexit_restore():
+    _unwrap_pipeline_streams()
+
+
+def apply_pipeline_tee_log(log_path):
+    """
+    Tee stdout/stderr to log_path (append). Call again to switch log files.
+    If log_path is falsy, uses VFLAIR/logs/main_pipeline.log.
+    """
+    global _pipeline_log_fp, _pipeline_active_log_path, _pipeline_atexit_registered, _pipeline_tee_disabled
+    if _pipeline_tee_disabled:
+        return
+    if not log_path or not str(log_path).strip():
+        log_path = _default_pipeline_log_path()
+    else:
+        log_path = os.path.abspath(os.path.expanduser(str(log_path).strip()))
+    if _pipeline_active_log_path == log_path and _pipeline_log_fp is not None:
+        return
+    log_dir = os.path.dirname(log_path)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+    _unwrap_pipeline_streams()
+    new_f = open(log_path, "a", encoding="utf-8", errors="replace", buffering=1)
+    _pipeline_log_fp = new_f
+    _pipeline_active_log_path = log_path
+    sys.stdout = PipelineStreamTee(sys.__stdout__, new_f)
+    sys.stderr = PipelineStreamTee(sys.__stderr__, new_f)
+    if not _pipeline_atexit_registered:
+        atexit.register(_pipeline_atexit_restore)
+        _pipeline_atexit_registered = True
+    banner = f"[pipeline-log] {log_path}\n"
+    sys.__stdout__.write(banner)
+    sys.__stdout__.flush()
+    new_f.write(banner)
+    new_f.write("\n===== run %s =====\n" % datetime.now().isoformat(timespec="seconds"))
+    new_f.flush()
+
+
+def _setup_pipeline_tee_log():
+    """
+    Mirror stdout/stderr to a log file. Runs at import time (before argparse),
+    so the path may be wrong until reconfigure_pipeline_tee_from_args() runs.
+    Disable with VFL_PIPELINE_NO_LOG=1.
+    """
+    global _pipeline_tee_disabled
+    if os.environ.get("VFL_PIPELINE_NO_LOG", "").strip().lower() in ("1", "true", "yes"):
+        _pipeline_tee_disabled = True
+        return
+    cfg_path = _resolve_config_path_from_argv()
+    raw = _read_pipeline_log_path_from_config_file(cfg_path) if cfg_path else ""
+    if raw:
+        apply_pipeline_tee_log(raw)
+    else:
+        apply_pipeline_tee_log(_default_pipeline_log_path())
+
+
+_setup_pipeline_tee_log()
+
+
+def reconfigure_pipeline_tee_from_args(args):
+    """After load_basic_configs(), apply pipeline_log_path from JSON (authoritative)."""
+    if _pipeline_tee_disabled:
+        return
+    path = str(getattr(args, "pipeline_log_path", "") or "").strip()
+    if path:
+        apply_pipeline_tee_log(path)
+
 import tensorflow as tf
 import copy
 # import torch.nn as nn
@@ -112,8 +267,8 @@ def evaluate_saved_model_test_only(args):
         print('======= Test Attack',index,': ',attack_args.attack_name,' =======')
         print('attack configs:',attack_args.attack_configs)
 
-        if attack_args.attack_name not in ['PGD', 'GradientBasedADI', 'LOCO']:
-            print(f"test-only mode currently supports PGD, GradientBasedADI, and LOCO evaluation only, skipping {attack_args.attack_name}")
+        if attack_args.attack_name not in ['PGD', 'GradientBasedADI', 'LOCO', 'TargetedInferencePerturbation']:
+            print(f"test-only mode currently supports PGD, GradientBasedADI, LOCO, and TargetedInferencePerturbation evaluation only, skipping {attack_args.attack_name}")
             continue
 
         vfl.args = attack_args
@@ -132,6 +287,11 @@ def evaluate_saved_model_test_only(args):
                 print(exp_result)
                 append_exp_res(attack_args.exp_res_path, exp_result)
             continue
+        elif attack_args.attack_name == 'TargetedInferencePerturbation':
+            attack_metric = attack_result
+            attack_metric_name = 'target_success_rate'
+            exp_result = f"K|bs|LR|num_class|Q|top_trainable|epoch|attack_name|{attack_args.attack_param_name}|main_task_acc|{attack_metric_name},%d|%d|%lf|%d|%d|%d|%d|{attack_args.attack_name}|{attack_args.attack_param}|{clean_acc}|{attack_metric}" %\
+                (attack_args.k,attack_args.batch_size, attack_args.main_lr, attack_args.num_classes, attack_args.Q, attack_args.apply_trainable_layer,attack_args.main_epochs)
         else:
             attack_metric = clean_acc - attack_result
             attack_metric_name = 'adv_acc_loss'
@@ -366,6 +526,14 @@ def evaluate_untargeted_backdoor(args):
             adv_acc = vfl.evaluate_attack()
             attack_metric = main_acc - adv_acc
             attack_metric_name = 'adv_acc_loss'
+        elif args.attack_name == 'TargetedInferencePerturbation':
+            vfl = MainTaskVFL(args)
+            if args.dataset not in ['cora']:
+                main_acc, _, _, _ = vfl.train()
+            else:
+                main_acc, _, _ = vfl.train_graph()
+            attack_metric = vfl.evaluate_attack()
+            attack_metric_name = 'target_success_rate'
         else:
             if args.apply_ns:
                 vfl = MainTaskVFLwithNoisySample(args)
@@ -504,6 +672,7 @@ if __name__ == '__main__':
         print('================= iter seed ',seed,' =================')
         
         args = load_basic_configs(args.configs, args)
+        reconfigure_pipeline_tee_from_args(args)
         args.need_auxiliary = 0 # no auxiliary dataset for attackerB
 
         if args.device == 'cuda':
@@ -564,15 +733,15 @@ if __name__ == '__main__':
         args.basic_vfl = None
         args.main_acc_noattack = None
 
+        if args.run_phase == 'test':
+            evaluate_saved_model_test_only(args)
+            continue
+        
         args = load_attack_configs(args.configs, args, -1)
         args = load_parties(args)
 
         commuinfo='== commu:'+args.communication_protocol
         append_exp_res(args.exp_res_path, commuinfo)
-
-        if args.run_phase == 'test':
-            evaluate_saved_model_test_only(args)
-            continue
 
         args.basic_vfl, args.main_acc_noattack = evaluate_no_attack(args)
         if args.run_phase == 'train':

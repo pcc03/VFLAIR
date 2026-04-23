@@ -108,6 +108,30 @@ class ClassificationModelHostTrainableHead3(nn.Module):
         return x
 
 
+class ClassificationModelHostTrainableHeadVGG16New(nn.Module):
+    """
+    Global classifier head aligned with external/kaggle-cifar10-vgg16 script:
+    concat(z0, z1) -> 512 -> 256 -> 10 logits.
+    """
+
+    def __init__(self, hidden_dim, num_classes):
+        super().__init__()
+        self.fc1_top = nn.Linear(hidden_dim, 512)
+        self.drop1 = nn.Dropout(0.4)
+        self.fc2_top = nn.Linear(512, 256)
+        self.drop2 = nn.Dropout(0.4)
+        self.fc3_top = nn.Linear(256, num_classes)
+
+    def forward(self, z_list):
+        x = torch.cat(z_list, dim=1)
+        x = F.relu(self.fc1_top(x))
+        x = self.drop1(x)
+        x = F.relu(self.fc2_top(x))
+        x = self.drop2(x)
+        x = self.fc3_top(x)
+        return x
+
+
 class ClassificationModelHostTrainableHeadGCN(nn.Module):
 
     def __init__(self, hidden_dim, num_classes):

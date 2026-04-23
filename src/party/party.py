@@ -173,8 +173,25 @@ class Party(object):
                 self.test_data, self.test_label, self.test_attribute = test_dst
 
     def prepare_data_loader(self, batch_size):
-        self.train_loader = DataLoader(self.train_dst, batch_size=batch_size)  # , shuffle=True
-        self.test_loader = DataLoader(self.test_dst, batch_size=batch_size)  # , shuffle=True
+        # Keras/TF `ImageDataGenerator` shuffles training batches by default. Match that behavior
+        # for fair apples-to-apples CIFAR10 training when requested.
+        match_keras = bool(
+            getattr(self.args, "cifar10_keras_match", False) and self.args.dataset == "cifar10"
+        )
+        train_shuffle = match_keras
+        # Keras: steps_per_epoch = len(X_train) // batch_size  (drops the final partial batch)
+        drop_last_train = match_keras
+        self.train_loader = DataLoader(
+            self.train_dst,
+            batch_size=batch_size,
+            shuffle=train_shuffle,
+            drop_last=drop_last_train,
+        )
+        self.test_loader = DataLoader(
+            self.test_dst,
+            batch_size=batch_size,
+            shuffle=False,
+        )
         if self.args.need_auxiliary == 1 and self.aux_dst != None:
             self.aux_loader = DataLoader(self.aux_dst, batch_size=batch_size)
         if self.train_attribute != None:

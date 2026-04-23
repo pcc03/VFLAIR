@@ -3,6 +3,7 @@
     "lr": 0.001,
     "save_model": true,
     "enable_cifar10_optimization": true,
+    "enable_state_deepcopy": true,
     "k": 2,
     "batch_size": 128,
     "communication":{

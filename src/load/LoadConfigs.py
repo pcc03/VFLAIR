@@ -7,7 +7,7 @@ import argparse
 from models.autoencoder import AutoEncoder
 
 TARGETED_BACKDOOR = ['ReplacementBackdoor', 'ASB']
-UNTARGETED_BACKDOOR = ['NoisyLabel', 'MissingFeature', 'NoisySample', 'PGD']
+UNTARGETED_BACKDOOR = ['NoisyLabel', 'MissingFeature', 'NoisySample', 'PGD', 'TargetedInferencePerturbation']
 LABEL_INFERENCE = ['BatchLabelReconstruction', 'DirectLabelScoring', 'NormbasedScoring', \
                    'DirectionbasedScoring', 'PassiveModelCompletion', 'ActiveModelCompletion']
 ATTRIBUTE_INFERENCE = ['AttributeInference']
@@ -40,9 +40,27 @@ def load_basic_configs(config_file_name, args):
 def do_load_basic_configs(config_dict, args):
     # print(config_dict)
     args.save_model = config_dict['save_model'] if ('save_model' in config_dict) else getattr(args, 'save_model', False)
+    # Controls heavy in-memory snapshot creation (deep copies of models/data)
+    # used by some attack implementations.
+    args.enable_state_deepcopy = config_dict['enable_state_deepcopy'] if (
+        'enable_state_deepcopy' in config_dict
+    ) else getattr(args, 'enable_state_deepcopy', True)
+    optimizer_cfg = config_dict.get('optimizer', {})
+    args.optimizer_name = optimizer_cfg.get('type', 'sgd').lower()
+    args.optimizer_momentum = optimizer_cfg.get('momentum', 0.9)
+    args.optimizer_weight_decay = optimizer_cfg.get('weight_decay', 5e-4)
+    args.save_dir = config_dict.get('save_dir', None)
+    args.pipeline_log_path = (
+        str(config_dict["pipeline_log_path"]).strip()
+        if "pipeline_log_path" in config_dict
+        else str(getattr(args, "pipeline_log_path", "") or "").strip()
+    )
     args.enable_cifar10_optimization = config_dict['enable_cifar10_optimization'] if (
         'enable_cifar10_optimization' in config_dict
     ) else getattr(args, 'enable_cifar10_optimization', False)
+    args.cifar10_use_raw32 = config_dict['cifar10_use_raw32'] if (
+        'cifar10_use_raw32' in config_dict
+    ) else getattr(args, 'cifar10_use_raw32', False)
     args.cifar10_optimized_batch_size = config_dict['cifar10_optimized_batch_size'] if (
         'cifar10_optimized_batch_size' in config_dict
     ) else getattr(args, 'cifar10_optimized_batch_size', 128)
@@ -68,6 +86,28 @@ def do_load_basic_configs(config_dict, args):
     # args.batch_size for main task
     args.batch_size = config_dict['batch_size'] if ('batch_size' in config_dict) else 2048
     args.test_batch_size = config_dict['test_batch_size'] if ('test_batch_size' in config_dict) else args.batch_size
+    # Optional: load only part of train/test samples for quick smoke tests.
+    # 0 means use the full split.
+    args.train_subset_size = config_dict['train_subset_size'] if ('train_subset_size' in config_dict) else 0
+    args.test_subset_size = config_dict['test_subset_size'] if ('test_subset_size' in config_dict) else 0
+    # Evaluation controls:
+    # - full_eval_every_n_epochs: run full-train/full-test eval every N epochs.
+    # - train_eval_use_augmentation: apply augmentation during train-eval pass.
+    args.full_eval_every_n_epochs = config_dict['full_eval_every_n_epochs'] if (
+        'full_eval_every_n_epochs' in config_dict
+    ) else getattr(args, 'full_eval_every_n_epochs', 1)
+    args.train_eval_use_augmentation = config_dict['train_eval_use_augmentation'] if (
+        'train_eval_use_augmentation' in config_dict
+    ) else getattr(args, 'train_eval_use_augmentation', True)
+    args.eval_match_centralized = config_dict['eval_match_centralized'] if (
+        'eval_match_centralized' in config_dict
+    ) else getattr(args, 'eval_match_centralized', False)
+    args.cifar10_keras_match = config_dict['cifar10_keras_match'] if (
+        'cifar10_keras_match' in config_dict
+    ) else getattr(args, 'cifar10_keras_match', False)
+    args.save_model_every_n_epochs = config_dict['save_model_every_n_epochs'] if (
+        'save_model_every_n_epochs' in config_dict
+    ) else getattr(args, 'save_model_every_n_epochs', 10)
 
     # Communication Protocol
     communication_protocol_dict = config_dict['communication'] if ('communication' in config_dict) else None
@@ -535,6 +575,9 @@ def load_attack_configs(config_file_name, args, index):
         elif args.attack_name == 'PGD':
             args.attack_param_name = 'eps'
             args.attack_param = str(attack_config_dict['parameters'].get('eps', 0.3))
+        elif args.attack_name == 'TargetedInferencePerturbation':
+            args.attack_param_name = 'target_label'
+            args.attack_param = str(attack_config_dict['parameters'].get('target_label', 0))
         elif args.attack_name == 'GradientBasedADI':
             args.attack_param_name = 'mutation_mode'
             args.attack_param = str(attack_config_dict['parameters'].get('mutation_mode', 'random_mutation'))

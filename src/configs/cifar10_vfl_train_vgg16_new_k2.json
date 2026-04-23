@@ -1,0 +1,46 @@
+{
+  "epochs": 100,
+  "lr": 0.001,
+  "save_model": true,
+  "enable_state_deepcopy": false,
+  "pipeline_log_path": "/home/peng326/VFLAIR/logs/main_pipeline_k2_newest.log",
+  "save_dir": "/home/newdrive2/peng326/trained_models/vgg16_vfl_k2_newest/",
+  "enable_cifar10_optimization": false,
+  "eval_match_centralized": true,
+  "cifar10_keras_match": true,
+  "train_eval_use_augmentation": true,
+  "full_eval_every_n_epochs": 1,
+  "save_model_every_n_epochs": 10,
+  "cifar10_use_raw32": true,
+  "k": 2,
+  "batch_size": 128,
+  "communication": {
+    "communication_protocol": "FedSGD",
+    "iteration_per_aggregation": 1
+  },
+  "dataset": {
+    "dataset_name": "cifar10",
+    "num_classes": 10
+  },
+  "optimizer": {
+    "type": "sgd",
+    "momentum": 0.9,
+    "weight_decay": 0.0
+  },
+  "model_list": {
+    "0": {
+      "type": "vgg16_imagenet_bottom",
+      "input_dim": 3,
+      "output_dim": 512,
+      "path": "random_vgg16_new"
+    },
+    "1": {
+      "type": "vgg16_imagenet_bottom",
+      "input_dim": 3,
+      "output_dim": 512,
+      "path": "random_vgg16_new"
+    },
+    "apply_trainable_layer": 1,
+    "global_model": "ClassificationModelHostTrainableHeadVGG16New"
+  }
+}

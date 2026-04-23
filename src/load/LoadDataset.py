@@ -62,6 +62,44 @@ CIFAR10_OPT_MEAN = (0.485, 0.456, 0.406)
 CIFAR10_OPT_STD = (0.229, 0.224, 0.225)
 
 
+def _slice_by_indices(value, indices):
+    if torch.is_tensor(value):
+        return value[indices]
+    if isinstance(value, np.ndarray):
+        return value[indices.cpu().numpy()]
+    if isinstance(value, list):
+        return [_slice_by_indices(v, indices) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_slice_by_indices(v, indices) for v in value)
+    return value
+
+
+def _apply_subset(dst, subset_size, seed):
+    if subset_size is None or subset_size <= 0:
+        return dst
+    if dst is None:
+        return dst
+    # Expect dataset tuples like (data, label) or (data, label, attribute).
+    if not isinstance(dst, tuple) or len(dst) < 2:
+        return dst
+    data = dst[0]
+    if torch.is_tensor(data):
+        total = data.shape[0]
+    elif isinstance(data, np.ndarray):
+        total = data.shape[0]
+    elif isinstance(data, list) and len(data) > 0 and (torch.is_tensor(data[0]) or isinstance(data[0], np.ndarray)):
+        total = data[0].shape[0]
+    else:
+        return dst
+    keep = min(int(subset_size), int(total))
+    if keep >= total:
+        return dst
+    g = torch.Generator()
+    g.manual_seed(int(seed) if seed is not None else 0)
+    indices = torch.randperm(total, generator=g)[:keep]
+    return tuple(_slice_by_indices(part, indices) for part in dst)
+
+
 class Cutout(object):
     def __init__(self, size):
         self.size = size
@@ -81,6 +119,16 @@ class Cutout(object):
 
 
 def get_cifar10_transforms(args):
+    if getattr(args, "cifar10_use_raw32", False):
+        # Match external/kaggle-cifar10-vgg16 preprocessing: float [0,1] only.
+        # torchvision.ToTensor() performs /255 conversion.
+        train_transform = transforms.Compose([
+            transforms.ToTensor(),
+        ])
+        test_transform = transforms.Compose([
+            transforms.ToTensor(),
+        ])
+        return train_transform, test_transform
     if getattr(args, "enable_cifar10_optimization", False):
         train_transform = transforms.Compose([
             transforms.Resize((224, 224)),
@@ -160,6 +208,29 @@ def dataset_partition_llm(args, index, dst, half_dim):
             assert 1 > 2, 'partition not available'
 
 
+def _pad_k2_image_half_to_square_chw(x, party_index):
+    """
+    CIFAR-style k=2 split returns one spatial half [N,C,H,W] (either H or W is halved).
+    Pad with zeros on the missing region so both parties see a square grid (e.g. 32×32),
+    which lets a full torchvision VGG16 `features` stack run without pooling collapse.
+    party_index 0 gets the first (top or left) half; 1 gets the second (bottom or right).
+    """
+    if x is None:
+        return None
+    h, w = x.shape[-2], x.shape[-1]
+    if h == w:
+        return x
+    if h < w:
+        need = w - h
+        if party_index == 0:
+            return torch.nn.functional.pad(x, (0, 0, 0, need))  # pad bottom (H)
+        return torch.nn.functional.pad(x, (0, 0, need, 0))  # pad top (H)
+    need = h - w
+    if party_index == 0:
+        return torch.nn.functional.pad(x, (0, need, 0, 0))  # pad right (W)
+    return torch.nn.functional.pad(x, (need, 0, 0, 0))  # pad left (W)
+
+
 def dataset_partition(args, index, dst, half_dim):
     if args.k == 1:
         return dst
@@ -167,10 +238,12 @@ def dataset_partition(args, index, dst, half_dim):
         if len(dst) == 2:  # IMAGE_DATA without attribute
             if args.k == 2:
                 if index == 0:
-                    return (dst[0][:, :, :half_dim, :], None)
+                    x0 = _pad_k2_image_half_to_square_chw(dst[0][:, :, :half_dim, :], 0)
+                    return (x0, None)
                     # return (dst[0][:, :, half_dim:, :], None)
                 elif index == 1:
-                    return (dst[0][:, :, half_dim:, :], dst[1])
+                    x1 = _pad_k2_image_half_to_square_chw(dst[0][:, :, half_dim:, :], 1)
+                    return (x1, dst[1])
                     # return (dst[0][:, :, :half_dim, :], dst[1])
                 else:
                     assert index <= 1, "invalide party index"
@@ -197,10 +270,12 @@ def dataset_partition(args, index, dst, half_dim):
         elif len(dst) == 3:  # IMAGE_DATA with attribute
             if args.k == 2:
                 if index == 0:
-                    return (dst[0][:, :, :half_dim, :], None, dst[2])
+                    x0 = _pad_k2_image_half_to_square_chw(dst[0][:, :, :half_dim, :], 0)
+                    return (x0, None, dst[2])
                     # return (dst[0][:, :, half_dim:, :], None, None)
                 elif index == 1:
-                    return (dst[0][:, :, half_dim:, :], dst[1], dst[2])
+                    x1 = _pad_k2_image_half_to_square_chw(dst[0][:, :, half_dim:, :], 1)
+                    return (x1, dst[1], dst[2])
                     # return (dst[0][:, :, :half_dim, :], dst[1], dst[2])
                 else:
                     assert index <= 1, "invalide party index"
@@ -339,7 +414,7 @@ def load_dataset_per_party(args, index):
         # test_dst = SimpleDataset(data, label)
         test_dst = (torch.tensor(data), label)
     elif args.dataset == "cifar10":
-        half_dim = 112
+        half_dim = 16 if getattr(args, "cifar10_use_raw32", False) else 112
         train_transform, test_transform = get_cifar10_transforms(args)
         train_dst = datasets.CIFAR10(DATA_PATH, download=True, train=True, transform=train_transform)
         data, label = fetch_data_and_label(train_dst, args.num_classes)
@@ -836,6 +911,11 @@ def load_dataset_per_party(args, index):
 
     else:
         assert args.dataset == 'mnist', "dataset not supported yet"
+
+    train_dst = _apply_subset(train_dst, getattr(args, "train_subset_size", 0), getattr(args, "current_seed", 0))
+    test_dst = _apply_subset(test_dst, getattr(args, "test_subset_size", 0), getattr(args, "current_seed", 0))
+    if args.need_auxiliary == 1:
+        aux_dst = _apply_subset(aux_dst, getattr(args, "train_subset_size", 0), getattr(args, "current_seed", 0))
 
     if len(train_dst) == 2:
         if not args.dataset in GRAPH_DATA:

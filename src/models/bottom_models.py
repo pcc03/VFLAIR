@@ -11,6 +11,7 @@ from models.resnet import *
 from models.rnn import *
 from models.adversarial_model import *
 from models.vgg import *
+from models.vgg16_new import *
 
 
 def weights_init(m):

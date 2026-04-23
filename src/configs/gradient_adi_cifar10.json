@@ -36,7 +36,7 @@
                 "party": [0],
                 "attacker_party_id": 0,
                 "victim_party_id": 1,
-                "attack_sample_num": 64,
+                "attack_sample_num": 10,
                 "victim_sample_size": 20,
                 "max_rounds": 10,
                 "delta_lr": 0.01,

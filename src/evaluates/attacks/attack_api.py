@@ -16,6 +16,7 @@ from evaluates.attacks.ASB import ASB
 from evaluates.attacks.PGD import PGD
 from evaluates.attacks.GradientBasedADI import GradientBasedADI
 from evaluates.attacks.LOCO import LOCO
+from evaluates.attacks.TargetedInferencePerturbation import TargetedInferencePerturbation
 
 # LLM attacks
 from evaluates.attacks.VanillaModelInversion_WhiteBox import VanillaModelInversion_WhiteBox
